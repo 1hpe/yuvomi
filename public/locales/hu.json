@@ -391,7 +391,9 @@
         "nutritionNoTarget": "Még nincs napi cél beállítva.",
         "nutritionEntries": "Ma {{count}} bejegyzés",
         "nutritionEntries_one": "Ma {{count}} bejegyzés",
-        "weatherUnavailable": "Az időjárás jelenleg nem érhető el"
+        "weatherUnavailable": "Az időjárás jelenleg nem érhető el",
+        "wallScreensaverNone": "A képernyővédő nem érhető el.",
+        "wallScreensaverStart": "Képernyővédő"
     },
     "tasks": {
         "resetOrder": "Automatikus rendezés",

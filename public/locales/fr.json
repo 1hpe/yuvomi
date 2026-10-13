@@ -391,7 +391,9 @@
         "nutritionNoTarget": "Aucun objectif quotidien défini.",
         "nutritionEntries": "{{count}} entrées aujourd’hui",
         "nutritionEntries_one": "{{count}} entrée aujourd’hui",
-        "weatherUnavailable": "Météo momentanément indisponible"
+        "weatherUnavailable": "Météo momentanément indisponible",
+        "wallScreensaverNone": "Économiseur d'écran non disponible.",
+        "wallScreensaverStart": "Économiseur d'écran"
     },
     "tasks": {
         "resetOrder": "Trier automatiquement",

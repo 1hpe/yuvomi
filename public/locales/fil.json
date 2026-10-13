@@ -405,7 +405,9 @@
         "nutritionNoTarget": "Wala pang pang-araw-araw na target.",
         "nutritionEntries": "{{count}} tala ngayong araw",
         "nutritionEntries_one": "{{count}} tala ngayong araw",
-        "weatherUnavailable": "Hindi available ang panahon sa ngayon"
+        "weatherUnavailable": "Hindi available ang panahon sa ngayon",
+        "wallScreensaverNone": "Hindi available ang screensaver.",
+        "wallScreensaverStart": "Screensaver"
     },
     "tasks": {
         "resetOrder": "Awtomatikong ayusin",
