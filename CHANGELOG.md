@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   these remain closed to displays. Paired displays pick this up with the update - no
   configuration needed.
 
+- **Stock: every batch now belongs to a household product** (part 1 of #1448). Nothing changes on
+  the page yet. Batches with the same name, compared trimmed, case-insensitive and with collapsed
+  whitespace, and the same unit share one product; existing stock is grouped once on update. The
+  product is the groundwork for a minimum over all batches, recipe matches that survive the last
+  bottle, and a grouped stock page. For API clients, pantry items additionally return
+  `product_id`; a batch whose name or unit is edited moves to the matching product.
+
 ### Changed
 
 - **A single occurrence of a calendar series is now named by its original start time (#2034).**
