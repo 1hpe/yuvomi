@@ -8,8 +8,9 @@ import { api } from '/api.js';
 import { renderRRuleFields, bindRRuleEvents, getRRuleValues } from '/rrule-ui.js';
 import { openModal as openSharedModal, closeModal, whenModalClosed, wireBlurValidation, validateAll, btnError, btnLoading, promptModal, confirmModal, advancedSection, refocusAfterRender, captureModalContext } from '/components/modal.js';
 import { whenHistorySettled } from '/utils/overlay-history.js';
-import { stagger, vibrate, scheduleUndoableDelete, acknowledgeCheck, collapseOut, expandIn, wireScrollFade, isImeComposing } from '/utils/ux.js';
-import { wireSwipeRows, maybeShowSwipeHint } from '/utils/swipe-row.js';
+import { beginRowFill, drawRowIcons, flushRowFill } from '/utils/row-fill.js';
+import { stagger, vibrate, scheduleUndoableDelete, acknowledgeCheck, collapseOut, expandIn, wireScrollFade, isImeComposing, drawIconsInSightOrder } from '/utils/ux.js';
+import { wireSwipeRows, maybeShowSwipeHint, deferredRevealHtml } from '/utils/swipe-row.js';
 import { t, getLocale, formatDate, formatTime, timeSuffix, formatDateInput, parseDateInput, isDateInputValid, formatTimeInput, parseTimeInput } from '/i18n.js';
 import { esc, REQUIRED_MARK } from '/utils/html.js';
 import { rowActionHtml, rowMenuHtml } from '/utils/row-action.js';
@@ -27,7 +28,7 @@ import '/components/tag-manager.js';
 import { findPageFab } from '/utils/fab.js';
 import { isNavModuleReadOnly } from '/permissions.js';
 import { isSoloHousehold, hidesPrivacyControls } from '/utils/household.js';
-import { popoverMenuHtml, installPopoverMenus, pageToolsMenuHtml, pageToolsActionEl, syncPopoverMenuItem } from '/utils/popover-menu.js';
+import { popoverMenuHtml, installPopoverMenus, pageToolsMenuHtml, pageToolsActionEl, syncPopoverMenuItem, showPopoverMenuAt } from '/utils/popover-menu.js';
 import { filterButtonHtml, syncFilterButton, openFilterSheet, filterChipsHtml } from '/utils/filter-sheet.js';
 import { initials } from '/utils/initials.js';
 import { toggleRowHtml } from '/settings/components.js';
@@ -35,7 +36,7 @@ import { wireTablist } from '/utils/tablist.js';
 import { attachSegmentIndicator } from '/utils/segment-indicator.js';
 import { todayKey, parseLocalDateKey } from '/utils/date.js';
 import { makeSortable } from '/utils/sortable.js';
-import { mountMasterDetail, splitViewDetailHtml, setSelectionBulk } from '/utils/master-detail.js';
+import { mountMasterDetail, splitViewDetailHtml, setSelectionBulk, releaseAddressOnClose } from '/utils/master-detail.js';
 import { zonedDateKey, zonedTimeKey } from '/utils/timezone.js';
 import { historyDayLabel } from '/utils/day-label.js';
 import {
@@ -352,13 +353,13 @@ function renderSwipeRow(task, innerHtml) {
   const isDone = task.status === 'done';
   return `
     <div class="swipe-row" data-swipe-id="${task.id}" data-swipe-status="${task.status}">
-      <div class="swipe-reveal swipe-reveal--done swipe-reveal--leading" aria-hidden="true">
+      <div class="swipe-reveal swipe-reveal--done swipe-reveal--leading" aria-hidden="true">${deferredRevealHtml(`
         <i data-lucide="${isDone ? 'rotate-ccw' : 'check'}" class="icon-xl" aria-hidden="true"></i>
-        <span>${isDone ? t('tasks.swipeOpen') : t('tasks.swipeDone')}</span>
+        <span>${isDone ? t('tasks.swipeOpen') : t('tasks.swipeDone')}</span>`)}
       </div>
-      <div class="swipe-reveal swipe-reveal--edit swipe-reveal--trailing" aria-hidden="true">
+      <div class="swipe-reveal swipe-reveal--edit swipe-reveal--trailing" aria-hidden="true">${deferredRevealHtml(`
         <i data-lucide="eye" class="icon-xl" aria-hidden="true"></i>
-        <span>${t('tasks.swipeView')}</span>
+        <span>${t('tasks.swipeView')}</span>`)}
       </div>
       ${innerHtml}
     </div>`;
@@ -665,6 +666,7 @@ function renderTaskCard(task, opts = {}) {
           id: `task-menu-${task.id}`,
           label: t('common.moreActionsNamed', { name: task.title }),
           className: 'task-card__inline-action',
+          defer: true,
           items: [
             { action: 'edit-task', id: task.id, icon: 'pencil', label: t('common.edit') },
             !archived && !task.parent_task_id
@@ -793,7 +795,14 @@ function wireTaskSearchReset(container, listEl) {
   });
 }
 
-function renderTaskGroups(tasks, groupMode) {
+/**
+ * @param {object[]} tasks
+ * @param {string} groupMode
+ * @param {(items: object[], render: (task: object) => string) => string} [rowsHtml]
+ *   baut die Zeilen einer Gruppe - der erste Aufbau setzt dort Platzhalter
+ *   (utils/row-fill.js, Critique R22-F F2.1)
+ */
+function renderTaskGroups(tasks, groupMode, rowsHtml = (items, render) => items.map(render).join('')) {
   if (!tasks.length) {
     // Leere Suche ≠ leeres Modul: bei aktiver Suche wäre „Noch keine Aufgaben"
     // schlicht falsch und der Anlegen-CTA die falsche Antwort (Notizen-Muster).
@@ -853,13 +862,13 @@ function renderTaskGroups(tasks, groupMode) {
         ${reorderable && groupTasks.some((x) => x.sort_order != null) ? taskResetButtonHtml(id, label) : ''}
       </h2>
       ${collapsed ? '' : `<div class="row-carrier">
-        ${sorted.map((t) => renderSwipeRow(t, renderTaskCard(t, {
+        ${rowsHtml(sorted, (t) => renderSwipeRow(t, renderTaskCard(t, {
           selecting: state.bulkSelectMode,
           selected: state.bulkSelectMode && state.selectedTaskIds.has(t.id),
           expandedSubtasks: state.subtasksExpandedByDefault,
           showCategory: groupMode !== 'category',
           reorderable,
-        }))).join('')}
+        })))}
       </div>`}
     </div>`;
   }).join('');
@@ -1219,7 +1228,7 @@ function renderModalContent({ task = null, users = [], reminder = null } = {}) {
            haengt deshalb an der Aufgabe und nicht an einem dritten Objekt.
            Ausgeschaltet steht er seit R19 hinter dem Aufklapper, dessen Zeile
            ihn nennt (countdownTucked oben). -->
-      <div class="form-group" style="margin-top:var(--space-4)">
+      <div class="form-group">
         <label class="toggle" style="margin:0">
           <input type="checkbox" id="task-countdown" name="countdown" aria-describedby="task-countdown-hint"
                  ${task?.countdown ? 'checked' : ''}>
@@ -1253,7 +1262,7 @@ function renderModalContent({ task = null, users = [], reminder = null } = {}) {
         </div>
       </div>
 
-      <div class="form-group task-tags-field" style="margin-top:var(--space-4)">
+      <div class="form-group task-tags-field">
         <label class="label" for="task-tag-input">${t('tasks.tagsLabel')}</label>
         <div class="task-tags-editor" id="task-tags-editor">
           <div class="task-tags-editor__chips" id="task-tags-chips"></div>
@@ -1273,7 +1282,7 @@ function renderModalContent({ task = null, users = [], reminder = null } = {}) {
            Schritte - anlegen, wieder oeffnen, umstellen. Die Vorauswahl bleibt
            der erste Status, damit ein Anlegen, das das Feld nicht beruehrt,
            sich genau wie vorher verhaelt. -->
-      <div class="form-group" style="margin-top:var(--space-4)">
+      <div class="form-group">
         <label class="label" for="task-status">${t('tasks.statusLabel')}</label>
         <select class="input" id="task-status" name="status">
           ${STATUSES().map((s) =>
@@ -1298,7 +1307,7 @@ ${syncTargetFieldHtml(task)}
            users.length-Bedingung; die Solo-Regel sagt ausdruecklich, dass sie
            keine Daten aendert (utils/household.js), also muss der Knoten
            stehenbleiben. Dokumente machen es an ihrer Stelle genauso. -->
-      <div class="form-group" style="margin-top:var(--space-4)"${hidesPrivacyControls('tasks') ? ' hidden' : ''}>
+      <div class="form-group"${hidesPrivacyControls('tasks') ? ' hidden' : ''}>
         <label class="label" for="task-visibility">${t('common.visibility.label')}</label>
         <select class="input" id="task-visibility" name="visibility">
           <option value="all"       ${visibility === 'all'       ? 'selected' : ''}>${t('common.visibility.all')}</option>
@@ -1314,7 +1323,7 @@ ${syncTargetFieldHtml(task)}
            Frage beantworten - wer darf hier was. Sichtbarkeit regelt das Sehen,
            die Sperre das Aendern. In einem Ein-Personen-Haushalt sagen beide
            nichts, also verschwinden sie zusammen (isSoloHousehold). -->
-      <div class="form-group" style="margin-top:var(--space-4)"${hidesPrivacyControls('tasks') ? ' hidden' : ''}>
+      <div class="form-group"${hidesPrivacyControls('tasks') ? ' hidden' : ''}>
         <label class="toggle" style="margin:0">
           <input type="checkbox" id="task-locked" name="locked" aria-describedby="task-locked-hint"
                  ${task?.locked ? 'checked' : ''}>
@@ -1333,7 +1342,7 @@ ${recurrenceTucked ? `<div class="task-form__tucked">${recurrenceHtml}</div>` : 
 ${reminderTucked ? `<div class="task-form__tucked">${reminderHtml}</div>` : ''}`;
 
   return `
-    <form id="task-form" novalidate>
+    <form id="task-form" class="form-stack" novalidate>
       <input type="hidden" id="task-id" value="${task?.id ?? ''}">
 
       <div class="form-group">
@@ -1352,7 +1361,15 @@ ${reminderTucked ? `<div class="task-form__tucked">${reminderHtml}</div>` : ''}`
         </div>
       </div>
 
-      <div class="modal-grid modal-grid--2">
+      ${/* FAELLIGKEIT UND UHRZEIT IN EINER ZEILE, AUCH AM TELEFON (R22 D17).
+          * `modal-grid--2` fiel unter 480px Modalbreite einspaltig: zwei volle
+          * Zeilen fuer ein Datum und eine Uhrzeit, und die Personen rutschten
+          * unter die Falz. `.form-pair` misst die Spalten (8rem passen zweimal
+          * ins 364px-Sheet) und faellt erst einspaltig, wenn das nicht mehr
+          * geht. `modal-grid` bleibt fuer seinen Rhythmus (die Gruppen darin
+          * ohne eigenen Rand, layout.css); die Spalten setzt `.form-pair`, das
+          * im Blatt danach steht. */ ''}
+      <div class="modal-grid form-pair">
         <div class="form-group">
           <label class="label" for="task-due-date">${t('tasks.dueDateLabel')}</label>
           <yuvomi-datepicker type="date" id="task-due-date" name="due_date"
@@ -1369,7 +1386,7 @@ ${reminderTucked ? `<div class="task-form__tucked">${reminderHtml}</div>` : ''}`
            und „- Niemand -" (Critique 2026-08-10). Das Feld bleibt im DOM und
            behaelt seinen Wert, es wird nur verborgen - der Absende-Pfad liest
            es unveraendert (utils/household.js). -->
-      <div class="form-group" style="margin-top:var(--space-4)"${isSoloHousehold() && assigneePeople.length <= 1 ? ' hidden' : ''}>
+      <div class="form-group"${isSoloHousehold() && assigneePeople.length <= 1 ? ' hidden' : ''}>
         ${renderUserMultiSelect(assigneePeople, selectedIds, 'task_assigned', 'tasks.assignedLabel')}
       </div>
 
@@ -1379,7 +1396,7 @@ ${reminderTucked ? `<div class="task-form__tucked">${reminderHtml}</div>` : ''}`
           * Die Liste ist standardmaessig nach Kategorie gruppiert; wer sie
           * hinter „Weitere Einstellungen" nicht fand, landete unter
           * „Sonstiges", und „Wichtig" suchte man dort gar nicht erst. */ ''}
-      <div class="modal-grid modal-grid--2 task-form__prio-cat" style="margin-top:var(--space-4)">
+      <div class="modal-grid modal-grid--2 task-form__prio-cat">
         <div class="form-group">
           <label class="label" for="task-priority">${t('tasks.priorityLabel')}</label>
           <select class="input" id="task-priority" name="priority">
@@ -1401,7 +1418,7 @@ ${reminderTucked ? `<div class="task-form__tucked">${reminderHtml}</div>` : ''}`
            bleibt sie trotzdem: eine Zusammenfassung kann Freitext nicht
            tragen (#731), hinter den Aufklapper gehoert sie nicht. Die Leiste
            erscheint erst mit dem Fokus im Feld (utils/markdown-toolbar.js). -->
-      <div class="form-group" style="margin-top:var(--space-4)">
+      <div class="form-group">
         <label class="label" for="task-description">${t('tasks.descriptionLabel')}</label>
         ${renderMarkdownToolbar()}
         <textarea class="input" id="task-description" name="description"
@@ -1421,7 +1438,7 @@ ${reminderTucked ? `<div class="task-form__tucked">${reminderHtml}</div>` : ''}`
       <div class="modal-panel__footer modal-panel__footer--plain">
         ${isEdit ? `
           <button type="button" class="btn btn--danger-outline" data-action="delete-task"
-                  data-id="${task.id}" style="margin-inline-end:auto">
+                  data-id="${task.id}">
             <i data-lucide="trash-2" class="icon-md" aria-hidden="true"></i>${t('common.delete')}
           </button>` : ''}
         <button type="button" class="btn btn--secondary" data-action="close-modal">${t('common.cancel')}</button>
@@ -1888,8 +1905,7 @@ async function toggleTaskStatus(id, currentStatus, doneByUserId = null) {
  */
 function acknowledgeStatusToggle(container, taskId, nextStatus, response) {
   window.yuvomi.showToast(
-    seriesDoneText(response)
-      ?? t(nextStatus === 'done' ? 'tasks.swipedDoneToast' : 'tasks.swipedOpenToast'),
+    seriesDoneText(response) ?? statusToggleSentence(taskId, nextStatus),
     'default',
     5000,
     async () => {
@@ -1902,6 +1918,18 @@ function acknowledgeStatusToggle(container, taskId, nextStatus, response) {
       }
     },
   );
+}
+
+/**
+ * DIE QUITTUNG NENNT DIE AUFGABE (R22 D17). „Als erledigt markiert." sagte
+ * nicht, WAS - nach einem Wisch ist die Zeile weg, und wer zwei schnell
+ * nacheinander abhakt, sieht zwei gleiche Saetze (der zweite ersetzt den
+ * ersten, D18). Ohne Titel (Zeile schon aus dem Zustand) bleibt der alte Satz.
+ */
+function statusToggleSentence(taskId, nextStatus) {
+  const title = state.tasks.find((x) => String(x.id) === String(taskId))?.title;
+  if (title) return t(nextStatus === 'done' ? 'tasks.checkedDoneNamed' : 'tasks.checkedOpenNamed', { title });
+  return t(nextStatus === 'done' ? 'tasks.swipedDoneToast' : 'tasks.swipedOpenToast');
 }
 
 /**
@@ -2066,7 +2094,7 @@ function renderReminderSection(task = null, reminder = null) {
       </div>
       ${locked ? `<p class="task-field-hint">${t('reminders.readOnlyNotice')}</p>` : ''}
       <div id="reminder-fields" class="reminder-fields" ${hasReminder ? '' : 'style="display:none"'}>
-        <div class="form-group" style="margin:0">
+        <div class="form-group">
           <label class="label" for="reminder-offset">${t('reminders.offsetLabel')}</label>
           <select class="input" id="reminder-offset"${off}>
             <option value="offset_none">${t('reminders.offsetNone')}</option>
@@ -2084,11 +2112,11 @@ function renderReminderSection(task = null, reminder = null) {
           <input type="hidden" id="reminder-stored-at" value="${esc(reminder?.remind_at ?? '')}"${off}>
         </div>
         <div class="modal-grid modal-grid--2" id="reminder-custom-fields" style="${showCustom ? '' : 'display:none'};margin-top:var(--space-3)">
-          <div class="form-group" style="margin:0">
+          <div class="form-group">
             <label class="label" for="reminder-custom-amount">${t('reminders.customAmountLabel')}</label>
             <input class="input" type="number" min="1" step="1" id="reminder-custom-amount" value="${resolved.amount}"${off}>
           </div>
-          <div class="form-group" style="margin:0">
+          <div class="form-group">
             <label class="label" for="reminder-custom-unit">${t('reminders.customUnitLabel')}</label>
             <select class="input" id="reminder-custom-unit"${off}>
               <option value="minutes" ${resolved.unit === 'minutes' ? 'selected' : ''}>${t('reminders.customMinutes')}</option>
@@ -3250,6 +3278,33 @@ function destroyKanbanSortables() {
  * Baum, und `wireKanbanSortable` ueberspringt sie zusaetzlich, weil ein
  * unsichtbares Ziel fuer SortableJS sonst ein gueltiges bleibt.
  */
+/**
+ * EINE SPALTE ZEIGT HOECHSTENS KANBAN_COL_CAP KARTEN (Critique R22, D17/D22).
+ * "Offen" trug im Seed eines Haushalts mit Vorlauf 158 Karten untereinander -
+ * eine Spalte, durch die niemand mehr blaettert, und jede Karte kostete beim
+ * Aufbau Knoten und Zeichen. Darunter steht "N weitere anzeigen"; der Tipp
+ * zeigt die ganze Spalte, bis die Seite verlassen wird (`kanbanColsShown`).
+ * Die Zahl im Spaltenkopf zaehlt weiter alle Karten, und das Ziehen in die
+ * Spalte bleibt moeglich - die neue Karte haengt sich an.
+ */
+const KANBAN_COL_CAP = 50;
+const kanbanColsShown = new Set();
+
+function showWholeKanbanCol(status) {
+  kanbanColsShown.add(status);
+}
+
+function kanbanColCards(status, tasks) {
+  if (kanbanColsShown.has(status) || tasks.length <= KANBAN_COL_CAP) {
+    return tasks.map((task) => renderKanbanCard(task)).join('');
+  }
+  const rest = tasks.length - KANBAN_COL_CAP;
+  return tasks.slice(0, KANBAN_COL_CAP).map((task) => renderKanbanCard(task)).join('') + `
+            <button type="button" class="kanban-col__more" data-kanban-more="${status}">
+              ${esc(t('tasks.kanbanShowMore', { count: rest }))}
+            </button>`;
+}
+
 function kanbanBoardHtml(cols, grouped) {
   return `
     <div class="kanban-board">
@@ -3282,7 +3337,7 @@ function kanbanBoardHtml(cols, grouped) {
           </div>
           <div class="kanban-col__body" id="${bodyId}" data-drop-zone="${col.status}"${collapsed ? ' hidden' : ''}>
             ${grouped[col.status].length
-              ? grouped[col.status].map((task) => renderKanbanCard(task)).join('')
+              ? kanbanColCards(col.status, grouped[col.status])
               : `<div class="kanban-col__empty">
                    <span class="kanban-col__empty-idle">${t('tasks.kanbanColEmpty')}</span>
                    <span class="kanban-col__empty-drop">${t('tasks.kanbanDropHint')}</span>
@@ -3384,6 +3439,18 @@ function wireKanbanClicks(container) {
     if (colToggle) {
       toggleKanbanCol(colToggle.dataset.kanbanToggle);
       renderKanban(container);
+      return;
+    }
+
+    // Die ganze Spalte zeigen (KANBAN_COL_CAP). Der Fokus geht auf die erste
+    // nachgeladene Karte, nicht zurueck an den Anfang des Bretts: der Knopf,
+    // auf dem er stand, gibt es danach nicht mehr.
+    const more = e.target.closest('[data-kanban-more]');
+    if (more) {
+      const status = more.dataset.kanbanMore;
+      showWholeKanbanCol(status);
+      renderKanban(container);
+      container.querySelector(`.kanban-col[data-status="${CSS.escape(status)}"] .kanban-card:nth-child(${KANBAN_COL_CAP + 1}) .kanban-card__title`)?.focus();
       return;
     }
 
@@ -3562,6 +3629,9 @@ function renderDoerPicker(task, isDone, archived) {
     items: members.map((u) => ({
       action: 'pick-doer', id: u.id, label: u.display_name, icon: 'user-round',
     })),
+    // Je Zeile ein Menue, geoeffnet fast nie: die Eintraege entstehen erst
+    // beim Oeffnen (R22, D22; popover-menu.js `defer`).
+    defer: true,
   });
 }
 
@@ -3845,39 +3915,19 @@ async function loadHistory(container, { append = false, afterWrite = false, quie
 
 /** So viele Zeilen bekommen ihre Zeichen sofort - mehr stehen auf keinem Bildschirm. */
 const ICON_ROWS_NOW = 30;
-let iconRun = 0;
 
 /**
  * DIE ZEICHEN DER LISTE KOMMEN IN SICHT-REIHENFOLGE (R20, Re-Critique
  * 2026-10-17 a6 P2). Jede Zeile traegt mehrere Lucide-Platzhalter; bei 200
  * Aufgaben ersetzte `createIcons` rund tausend davon im Frame des Wechsels
  * (210 ms bei 4x CPU). Die ersten ICON_ROWS_NOW Zeilen - der Bildschirm und
- * mehr - bekommen ihre Zeichen sofort, die uebrigen Gruppen danach je eine
- * pro Task, sodass ein Tipp dazwischen drankommt. Ein neueres Neuzeichnen
- * bricht den Rest ab (seine Gruppen haengen dann ohnehin nicht mehr).
+ * mehr - bekommen ihre Zeichen sofort, der Rest danach in Happen je Task.
+ * Seit R22 (D22) je ZEILE statt je Gruppe und als geteilter Baustein
+ * (`drawIconsInSightOrder`, utils/ux.js): eine Gruppe mit 120 Aufgaben war
+ * sonst ein einziger Happen im Frame des Wechsels.
  */
 function drawTaskIcons(listEl) {
-  if (!window.lucide) return;
-  const run = ++iconRun;
-  const groups = [...listEl.querySelectorAll(':scope > .task-group')];
-  let rows = 0;
-  let i = 0;
-  while (i < groups.length && rows < ICON_ROWS_NOW) {
-    window.lucide.createIcons({ el: groups[i] });
-    rows += groups[i].querySelectorAll('.swipe-row').length;
-    i += 1;
-  }
-  // Was ausserhalb der Gruppen steht (Leerzustand, Such-Ruecksetzer), sofort.
-  for (const el of listEl.children) if (!el.classList.contains('task-group')) window.lucide.createIcons({ el });
-  const rest = groups.slice(i);
-  const next = () => {
-    if (run !== iconRun) return;
-    const group = rest.shift();
-    if (!group) return;
-    if (group.isConnected) window.lucide.createIcons({ el: group });
-    setTimeout(next, 0);
-  };
-  if (rest.length) setTimeout(next, 0);
+  drawIconsInSightOrder(listEl, { rowSelector: '.swipe-row', rowsNow: ICON_ROWS_NOW });
 }
 
 function renderTaskList(container, { paneQuiet = false } = {}) {
@@ -3924,8 +3974,16 @@ function renderTaskList(container, { paneQuiet = false } = {}) {
   // Die Reihenfolge VOR dem Neuzeichnen: verlaesst die ausgewaehlte Zeile die
   // Ansicht, rueckt die Auswahl auf ihre Nachbarin (syncPaneAfterRender).
   const orderBefore = mdRowIds(listEl);
+  // DER ERSTE AUFBAU ZEICHNET NUR, WAS IM BILD STEHT (Critique R22-F, F2.1):
+  // jede andere Zeile steht als Platzhalter in ihrer Hoehe und kommt in
+  // Happen nach (utils/row-fill.js). Mobil 4x CPU, 261 Aufgaben: der Frame des
+  // Wechsels hielt das alte Bild 276 ms. Jeder spaetere Aufbau zeichnet ganz.
+  const fill = beginRowFill(listEl, { group: '.task-group' });
   listEl.replaceChildren();
-  listEl.insertAdjacentHTML('beforeend', renderTaskGroups(filteredTasks(), state.groupMode));
+  listEl.insertAdjacentHTML('beforeend', renderTaskGroups(filteredTasks(), state.groupMode, fill.rows));
+  // Nachgekommene Zeilen bekommen Zeichen und Wischgeste wie die ersten
+  // (die Verdrahtung uebergeht Zeilen, die sie schon haben).
+  fill.start({ onRows: (rows) => { drawRowIcons(rows); wireSwipeGestures(container); } });
   drawTaskIcons(listEl);
   syncPaneAfterRender(listEl, orderBefore, { quiet: paneQuiet });
   stagger(listEl.querySelectorAll('.swipe-row, .kanban-card'), { host: listEl });
@@ -5421,11 +5479,20 @@ function doerPanelOf(card) {
   return card?.querySelector?.(`.popover-menu[id^="${DOER_PANEL_PREFIX}"]`) ?? null;
 }
 
-function openDoerMenu(card) {
-  const panel = doerPanelOf(card);
-  if (!panel || typeof panel.showPopover !== 'function') return false;
-  if (!panel.matches(':popover-open')) panel.showPopover();
-  return true;
+/**
+ * DAS MENUE GEHT DORT AUF, WO DIE ZEILE ANGEFASST WURDE (R22 S9). Sein Knopf
+ * steht unsichtbar am Zeilenanfang; an ihm gerechnet hing es am Laptop ueber
+ * der Seitenleiste neben der Liste. Die Menue-Taste liefert keinen Zeiger
+ * (0/0) - dann steht es unter dem Zeilenanfang, wo der Fokusring ist.
+ */
+function doerMenuPoint(card, e) {
+  if (e && (e.clientX || e.clientY)) return { x: e.clientX, y: e.clientY };
+  const rect = card?.getBoundingClientRect?.();
+  return rect ? { x: rect.left + 12, y: rect.bottom } : null;
+}
+
+function openDoerMenu(card, point) {
+  return showPopoverMenuAt(doerPanelOf(card), point);
 }
 
 function wireDoerContextMenu(listEl) {
@@ -5435,7 +5502,7 @@ function wireDoerContextMenu(listEl) {
     if (press?.timer) clearTimeout(press.timer);
     press = null;
   };
-  const openAfterRelease = (card, primary) => {
+  const openAfterRelease = (card, primary, point) => {
     // Der Klick, der dem Loslassen folgt, gehoert zum Druck und nicht zur
     // Zeile - sonst hakte er ab oder oeffnete das Detail. Nur fuer die
     // Primaertaste: ein Rechtsklick erzeugt keinen `click`, und ein stehen
@@ -5444,7 +5511,7 @@ function wireDoerContextMenu(listEl) {
       swallowClick = true;
       setTimeout(() => { swallowClick = false; }, LONG_PRESS_MS);
     }
-    setTimeout(() => openDoerMenu(card), 0);
+    setTimeout(() => openDoerMenu(card, point), 0);
   };
 
   listEl.addEventListener('pointerdown', (e) => {
@@ -5472,13 +5539,13 @@ function wireDoerContextMenu(listEl) {
     if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) > LONG_PRESS_SLOP) clear();
   });
   listEl.addEventListener('pointerup', () => {
-    if (press?.armed) openAfterRelease(press.card, press.primary);
+    if (press?.armed) openAfterRelease(press.card, press.primary, { x: press.x, y: press.y });
     clear();
   });
   // Der Browser uebernimmt die Geste (Scrollen, Systemmenue): war der Druck
   // schon erkannt, steht die Frage trotzdem - sonst verpuffte er.
   listEl.addEventListener('pointercancel', () => {
-    if (press?.armed) openAfterRelease(press.card, false);
+    if (press?.armed) openAfterRelease(press.card, false, { x: press.x, y: press.y });
     clear();
   });
   listEl.addEventListener('contextmenu', (e) => {
@@ -5494,7 +5561,7 @@ function wireDoerContextMenu(listEl) {
       press.armed = true;
       return;
     }
-    openDoerMenu(card);
+    openDoerMenu(card, doerMenuPoint(card, e));
   });
   listEl.addEventListener('click', (e) => {
     if (!swallowClick) return;
@@ -5957,7 +6024,12 @@ function syncSplitHeight(container) {
   const page = container.querySelector('.tasks-page');
   const detail = page?.querySelector('.split-view__detail');
   if (!page || !detail) return;
-  const split = getComputedStyle(detail).display !== 'none';
+  // Unter 65rem Fensterbreite gibt es die Spalte sicher nicht (die Seite ist
+  // nie breiter als das Fenster) - ohne die Abfrage loeste getComputedStyle
+  // die Container-Abfrage auf und erzwang mobil zweimal je Wechsel ein Layout
+  // (4x CPU: 13 ms, Critique R22-F F2.1).
+  const split = (typeof window.matchMedia !== 'function' || window.matchMedia('(min-width: 65rem)').matches)
+    && getComputedStyle(detail).display !== 'none';
   page.classList.toggle('tasks-page--split', split);
   // In der Spaltenform scrollt die Liste selbst, nicht mehr `.app-content` -
   // sie traegt dann die Rolle, damit der Nachlauf der Shell-Flaechen (FAB,
@@ -5974,10 +6046,14 @@ function mountTaskSplit(container, signal) {
 
   // Ein Deep-Link auf eine Aufgabe, die in dieser Liste nicht steht (erledigt,
   // abgelegt, weggefiltert - die globale Suche findet alle): keine Auswahl
-  // ohne Zeile, sondern das Sheet wie bisher. Der Link BLEIBT in der Adresse
-  // (Kopieren, Neuladen, Vor - Codex an #1477); der Baustein laesst nur diese
+  // ohne Zeile, sondern das Sheet wie bisher. Der Link BLEIBT in der Adresse,
+  // solange das Blatt offen ist (Kopieren, Neuladen, Vor - Codex an #1477;
+  // beim Schliessen geht er, R22 D2); der Baustein laesst nur diese
   // Anfangsauswahl liegen, statt sie ohne Zeile zu beanspruchen.
   const initial = new URLSearchParams(location.search).get(TASK_DETAIL_PARAM);
+  // Die verlinkte Zeile muss stehen, auch wenn sie im ersten Aufbau erst
+  // spaeter gekommen waere (utils/row-fill.js).
+  if (initial) flushRowFill(container.querySelector('#task-list'));
   const sheetFor = initial && !root.querySelector(`[data-md-id="${CSS.escape(initial)}"]`) ? initial : null;
 
   taskMd = mountMasterDetail({
@@ -5986,6 +6062,10 @@ function mountTaskSplit(container, signal) {
     signal,
     deepLinkNarrow: true,
     claimInitial: sheetFor == null,
+    // Die Spalte steht erst ab 65rem Seitenbreite (layout.css, module-surface);
+    // darunter fragt der Baustein die Box nicht ab - das erzwang mobil im
+    // Frame des Wechsels ein Layout der ganzen Liste (4x CPU: 13-18 ms).
+    splitMedia: '(min-width: 65rem)',
     renderDetail: (id, body, ctx) => renderTaskPane(id, body, ctx.signal, container),
     openNarrow: (id, _trigger, { signal }) => openTaskSheet(id, container, signal),
     // Enter auf der gewaehlten Zeile: Bearbeiten, wie der Knopf im Kopf der
@@ -6020,7 +6100,11 @@ function mountTaskSplit(container, signal) {
   chosen?.scrollIntoView?.({ block: 'nearest' });
   // Mit dem Signal der Seite: verlaesst der Nutzer sie waehrend der Anfragen,
   // geht kein Blatt ueber der Zielseite auf.
-  if (sheetFor) openTaskSheet(sheetFor, container, signal);
+  if (sheetFor) {
+    openTaskSheet(sheetFor, container, signal);
+    // Das Blatt schliesst - `?open=` geht mit ihm (R22, D2).
+    releaseAddressOnClose(TASK_DETAIL_PARAM, sheetFor, { signal });
+  }
 }
 
 /**
@@ -6169,6 +6253,8 @@ export async function render(container, { user, signal } = {}) {
   // eingehaengt hat.
   if (signal?.aborted) return;
   pageSignal = signal ?? null;
+  // Jeder Besuch beginnt mit gedeckelten Spalten (KANBAN_COL_CAP).
+  kanbanColsShown.clear();
   // Beim Verlassen gehen die Zieh-Instanzen mit (R20): sie hingen in einer
   // Modulvariablen und hielten ueber ihre Rueckrufe die ganze alte Liste fest.
   signal?.addEventListener('abort', () => { destroyTaskSortables(); destroyKanbanSortables(); }, { once: true });
@@ -6283,7 +6369,7 @@ export async function render(container, { user, signal } = {}) {
               Liste (Re-Critique 2026-09-27, D5). */ ''}
         <div class="sr-only" role="status" aria-live="polite" id="tasks-reorder-announce"></div>
         <div class="split-view tasks-split">
-        <div id="task-list" class="split-view__list">
+        <div id="task-list" class="split-view__list" data-scroll-port="tasks">
           ${[1,2,3].map(() => `
             <div class="widget-skeleton" style="margin-bottom:var(--space-2)">
               <div class="skeleton skeleton-line skeleton-line--medium" style="height:18px;margin-bottom:var(--space-3)"></div>
@@ -6423,6 +6509,9 @@ export const __test = {
   // einmal auseinandergelaufen. `toggleKanbanCol` kommt mit, damit der
   // eingeklappte Zustand gesetzt werden kann, ohne in den Speicher zu greifen.
   kanbanBoardHtml, KANBAN_COLS, toggleKanbanCol, taskAdvancedTopics,
+  // R22 (D17): eine Spalte zeigt hoechstens KANBAN_COL_CAP Karten, bis
+  // "N weitere anzeigen" sie ganz zeigt.
+  KANBAN_COL_CAP, showWholeKanbanCol,
   // Mobil blaettert das Brett (R9 M2): die Punkte ueber den Spalten und ihr
   // Tipp, der zur Spalte fuehrt.
   kanbanPagerHtml, wireKanbanPager,
